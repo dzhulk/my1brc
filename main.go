@@ -33,6 +33,7 @@ const (
 
 var citiesMap map[uint]*City = make(map[uint]*City)
 var chunksChan chan Chunk = make(chan Chunk, 4000)
+var done int = 0
 
 func CutFile(b []byte) {
 	offset := 0
@@ -49,6 +50,7 @@ func CutFile(b []byte) {
 		chunksChan <- Chunk{offset, offset + pieceLen}
 		offset += pieceLen
 	}
+	done = 1
 }
 
 func perform(wg *sync.WaitGroup, b []byte, localMap map[uint]*City) {
@@ -59,7 +61,9 @@ func perform(wg *sync.WaitGroup, b []byte, localMap map[uint]*City) {
 		case chunk := <-chunksChan:
 			parsePiece(localMap, b[chunk.start:chunk.end])
 		default:
-			return
+			if done != 0 {
+				return
+			}
 		}
 	}
 }
@@ -78,26 +82,25 @@ func main() {
 		log.Fatal(err)
 	}
 	fileSize := int(stat.Size())
-	fmt.Printf("File size: %d\n", fileSize)
+	//fmt.Printf("File size: %d\n", fileSize)
 	b, err := syscall.Mmap(int(file.Fd()), 0, fileSize, syscall.PROT_READ, syscall.MAP_SHARED)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer syscall.Munmap(b)
-	fmt.Printf("File mmap size: %d\n", len(b))
-	CutFile(b)
+	//fmt.Printf("File mmap size: %d\n", len(b))
 
 	wg := sync.WaitGroup{}
 	workersCount := runtime.NumCPU()
 	localMaps := make([]map[uint]*City, workersCount)
-
 	for w := 0; w < workersCount; w++ {
 		wg.Add(1)
 		localMaps[w] = make(map[uint]*City)
 		go perform(&wg, b, localMaps[w])
 	}
+	CutFile(b)
 	wg.Wait()
-	close(chunksChan)
+	defer close(chunksChan)
 	mergePrint(localMaps)
 	duration := time.Since(start)
 	fmt.Println(duration)
