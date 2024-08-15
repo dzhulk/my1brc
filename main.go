@@ -19,6 +19,7 @@ type City struct {
 	sum   int
 	count int
 	name  string
+	hash  uint
 }
 
 type Chunk struct {
@@ -26,14 +27,58 @@ type Chunk struct {
 }
 
 const (
-	Kb        int = 1024
-	Mb        int = 1024 * Kb
-	pieceSize int = 4 * Mb
+	Kb        int  = 1024
+	Mb        int  = 1024 * Kb
+	pieceSize int  = 4 * Mb
+	slots     uint = 4096
 )
+
+var collisionsCount int64
+
+func newMyMap() []*City {
+	return make([]*City, slots)
+}
+
+func mapSet(mMap []*City, hash uint, city *City) {
+	slot := hash % slots
+
+	if mMap[slot] == nil {
+		mMap[slot] = city
+		return
+	} else {
+		//atomic.AddInt64(&collisionsCount, 1)
+		for i := slot + 1; i < uint(len(mMap)); i++ {
+			if mMap[i] == nil {
+				mMap[i] = city
+				return
+			} else {
+				//atomic.AddInt64(&collisionsCount, 1)
+			}
+		}
+	}
+
+	panic("no slots found")
+}
+
+func mapGet(mMap []*City, hash uint) (city *City) {
+	slot := hash % slots
+	if mMap[slot] != nil {
+		if mMap[slot].hash == hash {
+			city = mMap[slot]
+			return
+		}
+		for i := slot + 1; i < uint(len(mMap)); i++ {
+			if mMap[i] != nil && mMap[i].hash == hash {
+				city = mMap[i]
+				return
+			}
+		}
+	}
+	return
+}
 
 var citiesMap map[uint]*City = make(map[uint]*City)
 var chunksChan chan Chunk = make(chan Chunk, 4000)
-var done int = 0
 
 func CutFile(b []byte) {
 	offset := 0
@@ -50,21 +95,21 @@ func CutFile(b []byte) {
 		chunksChan <- Chunk{offset, offset + pieceLen}
 		offset += pieceLen
 	}
-	done = 1
+	close(chunksChan)
 }
 
-func perform(wg *sync.WaitGroup, b []byte, localMap map[uint]*City) {
+func perform(wg *sync.WaitGroup, b []byte, localMap []*City) {
 	defer wg.Done()
 
 	for {
-		select {
-		case chunk := <-chunksChan:
-			parsePiece(localMap, b[chunk.start:chunk.end])
-		default:
-			if done != 0 {
-				return
-			}
+		chunk, open := <-chunksChan
+		if !open {
+			return
 		}
+		if chunk.start == 0 && chunk.end == 0 { // zero value
+			continue
+		}
+		parsePiece(localMap, b[chunk.start:chunk.end])
 	}
 }
 
@@ -92,26 +137,28 @@ func main() {
 
 	wg := sync.WaitGroup{}
 	workersCount := runtime.NumCPU()
-	localMaps := make([]map[uint]*City, workersCount)
+	localMaps := make([][]*City, workersCount)
 	for w := 0; w < workersCount; w++ {
 		wg.Add(1)
-		localMaps[w] = make(map[uint]*City)
+		localMaps[w] = newMyMap()
 		go perform(&wg, b, localMaps[w])
 	}
 	CutFile(b)
 	wg.Wait()
-	defer close(chunksChan)
 	mergePrint(localMaps)
-	duration := time.Since(start)
-	fmt.Println(duration)
+	fmt.Println(time.Since(start))
+	fmt.Printf("Collision count: %d\n", collisionsCount)
 }
 
-func mergePrint(localMaps []map[uint]*City) {
+func mergePrint(localMaps [][]*City) {
 	for _, localMap := range localMaps {
-		for hash, city := range localMap {
-			global := citiesMap[hash]
+		for _, city := range localMap {
+			if city == nil {
+				continue
+			}
+			global := citiesMap[city.hash]
 			if global == nil {
-				citiesMap[hash] = city
+				citiesMap[city.hash] = city
 			} else {
 				if city.max > global.max {
 					global.max = city.max
@@ -127,7 +174,7 @@ func mergePrint(localMaps []map[uint]*City) {
 	printResults()
 }
 
-func parsePiece(localMap map[uint]*City, data []byte) int {
+func parsePiece(localMap []*City, data []byte) {
 	offset := 0
 	for i, b := range data {
 		if b == '\n' {
@@ -154,7 +201,7 @@ func parsePiece(localMap map[uint]*City, data []byte) int {
 			num = num*10 + int(data[index]-'0')
 			temp := num * neg
 
-			city := localMap[hash]
+			city := mapGet(localMap, hash)
 
 			if city != nil {
 				if temp > city.max {
@@ -166,18 +213,18 @@ func parsePiece(localMap map[uint]*City, data []byte) int {
 				city.sum += temp
 				city.count++
 			} else {
-				localMap[hash] = &City{
+				mapSet(localMap, hash, &City{
 					min:   temp,
 					max:   temp,
 					sum:   temp,
 					count: 1,
 					name:  string(data[offset:sem]),
-				}
+					hash:  hash,
+				})
 			}
 			offset = i + 1
 		}
 	}
-	return offset
 }
 
 func printResults() {
@@ -190,8 +237,7 @@ func printResults() {
 		return strings.Compare(a.name, b.name)
 	})
 
-	s := "{"
-	buf := bytes.NewBufferString(s)
+	buf := bytes.NewBufferString("{\n")
 	for i, v := range results {
 		fmt.Fprintf(buf, "%s=%.1f/%.1f/%.1f", v.name, float64(v.min)*0.1, float64(v.sum)/float64(v.count)*0.1, float64(v.max)*0.1)
 		if i != len(results)-1 {
