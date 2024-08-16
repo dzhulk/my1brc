@@ -1,6 +1,6 @@
 ```
 $ time ./my1brc data/measurements.txt
 ...
-4.245160089s
-./my1brc data/measurements.txt  49.78s user 1.33s system 1118% cpu 4.569 total
+3.886277377s
+./my1brc data/measurements.txt  45.55s user 1.22s system 1114% cpu 4.196 total
 ```
