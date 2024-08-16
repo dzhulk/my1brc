@@ -237,7 +237,7 @@ func printResults() {
 		return strings.Compare(a.name, b.name)
 	})
 
-	buf := bytes.NewBufferString("{\n")
+	buf := bytes.NewBufferString("{")
 	for i, v := range results {
 		fmt.Fprintf(buf, "%s=%.1f/%.1f/%.1f", v.name, float64(v.min)*0.1, float64(v.sum)/float64(v.count)*0.1, float64(v.max)*0.1)
 		if i != len(results)-1 {
